@@ -1,8 +1,46 @@
 from pathlib import Path  # Python 文件路径库，类似 Node.js 的 path
 
 import chromadb
+from chromadb import Collection
+from chromadb.api import ClientAPI
+
+client: ClientAPI
 
 
+# 初始化 ChromaDB collection
+def init_collection(
+    path: str = "./chroma_db", name: str = "obsidian_notes"
+) -> Collection:
+    global client
+    client = chromadb.PersistentClient(path=path)
+    collection = client.get_or_create_collection(name=name)
+    return collection
+
+
+# 列出当前已入库的 collection 名称
+def get_collections() -> list[str]:
+    if not client:
+        return []
+    return [collection.name for collection in client.list_collections()]
+
+
+# 将文本文件内容切片后存入 ChromaDB collection
+def ingest(collection: Collection, file_path: str, max_length: int = 100) -> dict:
+    content = Path(file_path).read_text(encoding="utf-8")
+
+    if not content.strip():
+        return {"message": f"File {file_path} is empty"}
+
+    chunks = chunk_text(content, max_length)
+    collection.add(
+        documents=chunks,
+        ids=[f"{file_path}_{i}" for i in range(len(chunks))],
+        metadatas=[{"source": file_path, "chunk_index": i} for i in range(len(chunks))],
+    )
+    return {"message": f"Successfully ingested {len(chunks)}"}
+
+
+# 将文本按空行拆分为段落，并根据 max_length 切片
 def chunk_text(text: str, max_length: int) -> list[str]:
     # 第一步：按空行（两个换行符）拆段落，返回段落列表
     paragraphs = text.split("\n\n")
@@ -37,23 +75,21 @@ def chunk_text(text: str, max_length: int) -> list[str]:
     return chunks
 
 
-# === 测试代码 ===
-def test():
-    # 读取同目录下的 CSS.md 文件，指定 utf-8 编码防止中文乱码
-    content = Path("CSS.md").read_text(encoding="utf-8")
-
-    # 调用 chunk_text，每个切片最大 30 字符
-    result = chunk_text(content, 30)
-
-    # 遍历结果，enumerate 会同时给你索引和值，类似 JS 的 entries()
-    for i, chunk in enumerate(result):
-        print(f"--- 切片 {i} ---")  # f-string，类似 JS 模板字符串 `--- 切片 ${i} ---`
-        print(chunk)
-        print()
-
-    client = chromadb.PersistentClient(path="./chroma_db")
-    collection = client.get_or_create_collection(name="obsidian_notes")
-    collection.add(documents=result, ids=[f"chunk_{i}" for i in range(len(result))])
-
-    results = collection.query(query_texts=["盒子模型是什么"], n_results=2)
-    print(results)
+def query(
+    collection: Collection, q: str, n: int = 2, source: str | None = None
+) -> dict:
+    if n > collection.count():
+        return {
+            "message": f"Requested {n} results, exceed the max number of documents in the collection ({collection.count()})"
+        }
+    if source:
+        results = collection.query(
+            query_texts=[q], n_results=n, where={"source": source}
+        )
+    else:
+        results = collection.query(query_texts=[q], n_results=n)
+    return {
+        "query": q,
+        "result": results["documents"][0] if results["documents"] else [],
+        "metadatas": results["metadatas"][0] if results["metadatas"] else [],
+    }
